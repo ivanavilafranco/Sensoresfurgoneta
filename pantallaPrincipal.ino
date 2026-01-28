@@ -36,11 +36,9 @@ void OnDataRecv(uint8_t *mac, uint8_t *incomingData, uint8_t len) {
 // ================= SETUP =================
 void setup() {
   Serial.begin(115200);
-
   display.init();
   display.clear();
   display.flipScreenVertically();
-
   macPantalla = WiFi.macAddress();
   WiFi.mode(WIFI_STA);
 
@@ -86,3 +84,4 @@ void loop() {
   display.display();
   delay(200);
 }
+
