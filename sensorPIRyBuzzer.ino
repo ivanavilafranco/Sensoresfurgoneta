@@ -1,31 +1,38 @@
-Modulo pir y altavoz
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 
-#define PIR_PIN     D1   // Señal del PIR
-#define BUZZER_PIN  D7   // Buzzer pasivo
-#define ID_SENSOR   2    // ID único del módulo PIR
+// ================= PINES =================
+#define PIR_SALON_PIN 12   // D6
+#define PIR_TRAS_PIN  13   // D7
+#define BUZZER_PIN    14   // D5
 
-uint8_t macPrincipal[] = {meter la mac};
+#define ID_SENSOR 2       // ID del módulo PIR
 
+uint8_t macPrincipal[] = {mac};
+
+// ================= ESTRUCTURA DE DATOS =================
 typedef struct {
   uint8_t id;
-  bool pir;   // true = movimiento, false = sin movimiento
+  bool salon;
+  bool trasera;
 } datos_pir;
 
 datos_pir datos;
 
+// ================= CALLBACK DE ENVÍO =================
 void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus) {
-  Serial.print("Estado envío: ");
+  Serial.print("Estado envío PIR: ");
   Serial.println(sendStatus == 0 ? "OK" : "Fallo");
 }
 
+// ================= SETUP =================
 void setup() {
   Serial.begin(115200);
 
-  pinMode(PIR_PIN, INPUT);
+  pinMode(PIR_SALON_PIN, INPUT);
+  pinMode(PIR_TRAS_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
-  noTone(BUZZER_PIN); // Asegurarse apagado al iniciar
+  noTone(BUZZER_PIN);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -40,37 +47,40 @@ void setup() {
   esp_now_add_peer(macPrincipal, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
 
   datos.id = ID_SENSOR;
-  datos.pir = false;
+  datos.salon = false;
+  datos.trasera = false;
 
-  Serial.println("⏳ Esperando estabilización del PIR...");
-  delay(30000); // 30 segundos para estabilizar el PIR
-  Serial.println("✅ PIR listo");
+  Serial.println("⏳ Esperando estabilización de PIR...");
+  delay(30000);
+  Serial.println("✅ PIR listos");
 }
 
+// ================= LOOP =================
 void loop() {
-  static bool estadoAnterior = false;
+  static bool estadoSalonAnterior = false;
+  static bool estadoTrasAnterior = false;
   static unsigned long ultimoEnvio = 0;
 
-  // Leer PIR
-  bool estadoActual = digitalRead(PIR_PIN);
+  bool estadoSalon = digitalRead(PIR_SALON_PIN);
+  bool estadoTras = digitalRead(PIR_TRAS_PIN);
 
-  // Activar buzzer mientras haya movimiento
-  if (estadoActual) {
-    tone(BUZZER_PIN, 2000); // 2000 Hz continuo
-  } else {
-    noTone(BUZZER_PIN);     // apagar buzzer
-  }
+  if (estadoSalon || estadoTras) tone(BUZZER_PIN, 2000);
+  else noTone(BUZZER_PIN);
 
-  // Enviar datos al principal si cambia o cada 500ms
-  if (estadoActual != estadoAnterior || millis() - ultimoEnvio > 500) {
-    estadoAnterior = estadoActual;
+  if (estadoSalon != estadoSalonAnterior || estadoTras != estadoTrasAnterior || millis() - ultimoEnvio > 500) {
+    estadoSalonAnterior = estadoSalon;
+    estadoTrasAnterior = estadoTras;
     ultimoEnvio = millis();
 
-    datos.pir = estadoActual;
+    datos.salon = estadoSalon;
+    datos.trasera = estadoTras;
+
     esp_now_send(macPrincipal, (uint8_t *)&datos, sizeof(datos));
 
-    Serial.print("PIR: ");
-    Serial.println(estadoActual ? "MOVIMIENTO (INTRUSO)" : "SIN MOVIMIENTO");
+    Serial.print("SALON: ");
+    Serial.print(estadoSalon ? "MOVIMIENTO" : "SIN MOVIMIENTO");
+    Serial.print(" | TRASERA: ");
+    Serial.println(estadoTras ? "MOVIMIENTO" : "SIN MOVIMIENTO");
   }
 
   delay(50);
