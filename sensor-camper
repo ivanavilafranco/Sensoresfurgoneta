@@ -1,0 +1,726 @@
+substitutions:
+  # En casa: puente del PC (192.168.1.x:1884).
+  # En la furgoneta: IP de la Raspberry en su red (normalmente 1883).
+  broker_ip: "192.168.1.x"
+  broker_port: "1884"
+  portal_venus: "d83xxxxxx"
+  dingtian: "relay66743"
+
+esphome:
+  name: sensor-camper
+  friendly_name: Panel Camper
+
+esp8266:
+  board: nodemcuv2
+
+# ==================================================
+# CONEXION WIFI (claves en secrets.yaml)
+# El portal cautivo se ha quitado para liberar memoria.
+# ==================================================
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Panel-Camper-Rescate"
+    password: !secret ap_password
+
+logger:
+
+ota:
+  - platform: esphome
+
+web_server:
+  port: 80
+
+# Necesario para leer los mensajes JSON de Venus OS.
+json:
+
+# Hora desde internet (NTP), con horario de verano de España.
+time:
+  - platform: sntp
+    id: reloj
+    timezone: "CET-1CEST,M3.5.0,M10.5.0/3"
+
+# Momento (en ms desde el arranque) del ultimo dato recibido por MQTT.
+globals:
+  - id: ultimo_dato_mqtt
+    type: unsigned long
+    restore_value: no
+    initial_value: "0"
+
+# ==================================================
+# MQTT - RASPBERRY / VENUS OS / DINGTIAN
+# ==================================================
+mqtt:
+  id: conexion_mqtt
+  broker: ${broker_ip}
+  port: ${broker_port}
+  discovery: false
+  topic_prefix: camper/panel
+  reboot_timeout: 0s
+
+# Venus OS solo publica valores si recibe un keepalive periodico.
+interval:
+  - interval: 30s
+    then:
+      - mqtt.publish:
+          topic: "R/${portal_venus}/keepalive"
+          payload: ""
+
+# ==================================================
+# OLED INTEGRADA
+# SDA = D5 / GPIO14
+# SCL = D6 / GPIO12
+# ==================================================
+i2c:
+  id: bus_i2c
+  sda: GPIO14
+  scl: GPIO12
+  scan: true
+  frequency: 100kHz
+
+font:
+  - file: "gfonts://Roboto"
+    id: fuente_10
+    size: 10
+
+  - file: "gfonts://Roboto"
+    id: fuente_12
+    size: 12
+
+  - file: "gfonts://Roboto"
+    id: fuente_18
+    size: 18
+
+  - file: "gfonts://Roboto"
+    id: fuente_28
+    size: 28
+
+# ==================================================
+# SENSORES
+# ==================================================
+sensor:
+  - platform: wifi_signal
+    id: senal_wifi
+    name: "Senal WiFi"
+    update_interval: 15s
+
+  - platform: uptime
+    id: tiempo_encendido
+    name: "Tiempo encendido"
+    update_interval: 30s
+
+  # Energia
+  - platform: template
+    id: bateria_v
+    name: "Bateria V"
+    accuracy_decimals: 2
+    internal: true
+
+  - platform: template
+    id: bateria_soc
+    name: "Bateria SOC"
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: solar_w
+    name: "Solar W"
+    accuracy_decimals: 0
+    internal: true
+
+  # Consumo
+  - platform: template
+    id: consumo_w
+    name: "Consumo W"
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: bat_corriente
+    name: "Corriente bateria A"
+    accuracy_decimals: 2
+    internal: true
+
+  # Ambiente
+  - platform: template
+    id: amb_temp
+    name: "Ambiente temperatura"
+    accuracy_decimals: 1
+    internal: true
+
+  - platform: template
+    id: amb_hum
+    name: "Ambiente humedad"
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: asiento_temp
+    name: "Temperatura asiento doble"
+    accuracy_decimals: 1
+    internal: true
+
+  # Agua (niveles; quedan en -- hasta calibrar los depositos en Venus)
+  - platform: template
+    id: agua_limpias_nivel
+    name: "Agua limpias nivel"
+    accuracy_decimals: 0
+    internal: true
+
+  - platform: template
+    id: agua_grises_nivel
+    name: "Agua grises nivel"
+    accuracy_decimals: 0
+    internal: true
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_panel
+      name: "Direccion IP"
+
+    mac_address:
+      name: "Direccion MAC"
+
+  # ----- Energia -----
+  - platform: mqtt_subscribe
+    id: raw_bateria_v
+    name: "Raw bateria V"
+    topic: "N/${portal_venus}/system/0/Dc/Battery/Voltage"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(bateria_v).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_bateria_soc
+    name: "Raw bateria SOC"
+    topic: "N/${portal_venus}/battery/289/Soc"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(bateria_soc).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_solar_w
+    name: "Raw solar W"
+    topic: "N/${portal_venus}/solarcharger/288/Yield/Power"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(solar_w).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  # ----- Consumo -----
+  - platform: mqtt_subscribe
+    id: raw_consumo_w
+    name: "Raw consumo W"
+    topic: "N/${portal_venus}/system/0/Dc/System/Power"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(consumo_w).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_bat_corriente
+    name: "Raw corriente bateria"
+    topic: "N/${portal_venus}/system/0/Dc/Battery/Current"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(bat_corriente).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  # ----- Ambiente -----
+  - platform: mqtt_subscribe
+    id: raw_amb_temp
+    name: "Raw ambiente temperatura"
+    topic: "N/${portal_venus}/temperature/102/Temperature"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(amb_temp).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_amb_hum
+    name: "Raw ambiente humedad"
+    topic: "N/${portal_venus}/temperature/102/Humidity"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(amb_hum).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_asiento_temp
+    name: "Raw temperatura asiento doble"
+    topic: "N/${portal_venus}/temperature/101/Temperature"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(asiento_temp).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  # ----- Agua -----
+  - platform: mqtt_subscribe
+    id: raw_agua_limpias_nivel
+    name: "Raw agua limpias nivel"
+    topic: "N/${portal_venus}/tank/23/Level"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(agua_limpias_nivel).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  - platform: mqtt_subscribe
+    id: raw_agua_grises_nivel
+    name: "Raw agua grises nivel"
+    topic: "N/${portal_venus}/tank/22/Level"
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            id(ultimo_dato_mqtt) = millis();
+            json::parse_json(x, [](JsonObject root) -> bool {
+              if (!root["value"].isNull()) id(agua_grises_nivel).publish_state(root["value"].as<float>());
+              return true;
+            });
+
+  # ----- Relés del Dingtian: llegan como texto ON u OFF -----
+  - platform: mqtt_subscribe
+    id: rele_frigorifico
+    name: "Rele frigorifico"
+    topic: "/${dingtian}/out/r6"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_tomas_usb
+    name: "Rele tomas USB"
+    topic: "/${dingtian}/out/r10"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_tomas_12v
+    name: "Rele tomas 12V"
+    topic: "/${dingtian}/out/r11"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_inversor
+    name: "Rele inversor"
+    topic: "/${dingtian}/out/r16"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_luz_salon
+    name: "Rele luz salon"
+    topic: "/${dingtian}/out/r1"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_luz_cama
+    name: "Rele luz salon cama"
+    topic: "/${dingtian}/out/r2"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_luz_lateral
+    name: "Rele luz exterior lateral"
+    topic: "/${dingtian}/out/r3"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+  - platform: mqtt_subscribe
+    id: rele_luz_atras
+    name: "Rele luz exterior atras"
+    topic: "/${dingtian}/out/r4"
+    internal: true
+    on_value:
+      then:
+        - lambda: 'id(ultimo_dato_mqtt) = millis();'
+
+# ==================================================
+# MENUS
+# Se pueden añadir nuevas opciones en esta lista.
+# ==================================================
+select:
+  - platform: template
+    id: menu_principal
+    name: "Menu principal"
+    optimistic: true
+    restore_value: false
+    initial_option: "Inicio"
+
+    options:
+      - "Inicio"
+      - "Ambiente"
+      - "Energia"
+      - "Consumo"
+      - "Energia rele"
+      - "Agua"
+      - "Luces"
+      - "Calefaccion"
+      - "Trampillas"
+      - "Seguridad"
+      - "Ampliaciones"
+      - "Sistema"
+
+    on_value:
+      then:
+        - switch.turn_on: pantalla_encendida
+        - component.update: oled
+
+  # Selecciona cual de las seis trampillas visualizar.
+  # No envia ordenes a motores en esta primera version.
+  - platform: template
+    id: trampilla_seleccionada
+    name: "Trampilla seleccionada"
+    optimistic: true
+    restore_value: false
+    initial_option: "Trampilla 1"
+
+    options:
+      - "Trampilla 1"
+      - "Trampilla 2"
+      - "Trampilla 3"
+      - "Trampilla 4"
+      - "Trampilla 5"
+      - "Trampilla 6"
+
+    on_value:
+      then:
+        - select.set:
+            id: menu_principal
+            option: "Trampillas"
+
+# ==================================================
+# CONTROL DE LA PANTALLA
+# ==================================================
+switch:
+  - platform: template
+    id: pantalla_encendida
+    name: "Pantalla encendida"
+    optimistic: true
+    restore_mode: ALWAYS_ON
+
+    turn_on_action:
+      - lambda: |-
+          id(oled).turn_on();
+      - component.update: oled
+
+    turn_off_action:
+      - lambda: |-
+          id(oled).turn_off();
+
+# ==================================================
+# ACCIONES REUTILIZABLES
+# ==================================================
+script:
+  - id: menu_siguiente
+    then:
+      - select.next:
+          id: menu_principal
+          cycle: true
+
+  - id: menu_anterior
+    then:
+      - select.previous:
+          id: menu_principal
+          cycle: true
+
+  - id: volver_inicio
+    then:
+      - select.set:
+          id: menu_principal
+          option: "Inicio"
+
+  - id: alternar_pantalla
+    then:
+      - switch.toggle: pantalla_encendida
+
+  - id: siguiente_trampilla
+    then:
+      - select.next:
+          id: trampilla_seleccionada
+          cycle: true
+
+# ==================================================
+# BOTONES VIRTUALES EN LA WEB
+# ==================================================
+button:
+  - platform: template
+    name: "Menu siguiente"
+    on_press:
+      - script.execute: menu_siguiente
+
+  - platform: template
+    name: "Menu anterior"
+    on_press:
+      - script.execute: menu_anterior
+
+  - platform: template
+    name: "Volver al inicio"
+    on_press:
+      - script.execute: volver_inicio
+
+  - platform: template
+    name: "Alternar pantalla"
+    on_press:
+      - script.execute: alternar_pantalla
+
+  - platform: template
+    name: "Siguiente trampilla"
+    on_press:
+      - script.execute: siguiente_trampilla
+
+  - platform: template
+    name: "Probar conexion al broker"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("prueba_red", "Probando ${broker_ip}:${broker_port}...");
+          WiFiClient prueba;
+          if (prueba.connect("${broker_ip}", ${broker_port})) {
+            ESP_LOGI("prueba_red", "CORRECTO: el ESP alcanza el broker");
+            prueba.stop();
+          } else {
+            ESP_LOGE("prueba_red", "FALLO: el ESP no alcanza el broker");
+          }
+
+# ==================================================
+# DIBUJO DE LA PANTALLA
+# ==================================================
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    i2c_id: bus_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+
+    # 0 = franja amarilla arriba. 180 = franja amarilla abajo.
+    rotation: 0
+
+    contrast: 70%
+    update_interval: 1s
+
+    lambda: |-
+      const std::string pagina = id(menu_principal).current_option();
+      const int total = id(menu_principal).traits.get_options().size();
+      const int actual = id(menu_principal).active_index().value_or(0) + 1;
+
+      // Datos caducados si llevan mas de 2 minutos sin llegar.
+      const bool caducado = (millis() - id(ultimo_dato_mqtt)) > 120000UL;
+
+      // Fila con texto (ON / OFF) alineado a la derecha.
+      auto fila_txt = [&](int y, const char *nombre, const std::string &estado) {
+        it.print(0, y, id(fuente_10), nombre);
+        const char *valor = (estado == "ON") ? "ON"
+                          : (estado == "OFF") ? "OFF" : "--";
+        it.print(127, y, id(fuente_10), COLOR_ON, TextAlign::TOP_RIGHT, valor);
+      };
+
+      // Fila con numero y unidad alineada a la derecha.
+      auto fila_num = [&](int y, const char *nombre, float v, int dec, const char *unidad) {
+        it.print(0, y, id(fuente_10), nombre);
+        char b[20];
+        if (isnan(v)) {
+          snprintf(b, sizeof(b), "--");
+        } else {
+          snprintf(b, sizeof(b), "%.*f%s", dec, v, unidad);
+        }
+        it.print(127, y, id(fuente_10), COLOR_ON, TextAlign::TOP_RIGHT, b);
+      };
+
+      // Cabecera invertida.
+      it.filled_rectangle(0, 0, 128, 14, COLOR_ON);
+      it.print(2, 2, id(fuente_10), COLOR_OFF, pagina.c_str());
+
+      // "!" = datos caducados. W = WiFi, M = broker MQTT.
+      if (caducado) {
+        it.print(70, 2, id(fuente_10), COLOR_OFF, "!");
+      }
+      it.print(80, 2, id(fuente_10), COLOR_OFF,
+               WiFi.status() == WL_CONNECTED ? "W" : "-");
+      it.print(90, 2, id(fuente_10), COLOR_OFF,
+               id(conexion_mqtt).is_connected() ? "M" : "-");
+
+      it.printf(127, 2, id(fuente_10), COLOR_OFF, TextAlign::TOP_RIGHT,
+                "%d/%d", actual, total);
+
+      if (pagina == "Inicio") {
+        auto ahora = id(reloj).now();
+
+        if (ahora.is_valid()) {
+          const char *dias[] = {"Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"};
+          const char *dia = dias[ahora.day_of_week - 1];
+
+          it.printf(64, 17, id(fuente_28), COLOR_ON, TextAlign::TOP_CENTER,
+                    "%s", ahora.strftime("%H:%M").c_str());
+
+          std::string fecha = std::string(dia) + " " + ahora.strftime("%d/%m/%Y");
+          it.printf(64, 50, id(fuente_12), COLOR_ON, TextAlign::TOP_CENTER,
+                    "%s", fecha.c_str());
+        } else {
+          it.printf(64, 22, id(fuente_12), COLOR_ON, TextAlign::TOP_CENTER,
+                    "Sincronizando hora...");
+        }
+
+      } else if (pagina == "Ambiente") {
+        it.print(0, 17, id(fuente_10), "DHT11");
+        if (caducado) {
+          it.print(127, 17, id(fuente_10), COLOR_ON, TextAlign::TOP_RIGHT, "CADUCADO");
+        }
+
+        if (isnan(id(amb_temp).state) || isnan(id(amb_hum).state)) {
+          it.print(0, 28, id(fuente_12), "-- C   -- %");
+        } else {
+          it.printf(0, 28, id(fuente_12), "%.1f C   %.0f %%",
+                    id(amb_temp).state, id(amb_hum).state);
+        }
+
+        it.print(0, 41, id(fuente_10), "ASIENTO DOBLE");
+        if (isnan(id(asiento_temp).state)) {
+          it.print(0, 52, id(fuente_12), "-- C");
+        } else {
+          it.printf(0, 52, id(fuente_12), "%.1f C", id(asiento_temp).state);
+        }
+
+      } else if (pagina == "Energia") {
+        it.print(0, 17, id(fuente_10), "BATERIA");
+        if (caducado) {
+          it.print(127, 17, id(fuente_10), COLOR_ON, TextAlign::TOP_RIGHT, "CADUCADO");
+        }
+
+        if (isnan(id(bateria_v).state) || isnan(id(bateria_soc).state)) {
+          it.print(0, 28, id(fuente_12), "-- V   --%");
+        } else {
+          it.printf(0, 28, id(fuente_12), "%.2f V   %.0f %%",
+                    id(bateria_v).state, id(bateria_soc).state);
+        }
+
+        it.print(0, 41, id(fuente_10), "SOLAR");
+        if (isnan(id(solar_w).state)) {
+          it.print(0, 52, id(fuente_12), "-- W");
+        } else {
+          it.printf(0, 52, id(fuente_12), "%.0f W", id(solar_w).state);
+        }
+
+      } else if (pagina == "Consumo") {
+        fila_num(17, "Consumo casa", id(consumo_w).state, 0, " W");
+        fila_num(29, "Corriente bat", id(bat_corriente).state, 2, " A");
+
+      } else if (pagina == "Energia rele") {
+        fila_txt(17, "Frigorifico", id(rele_frigorifico).state);
+        fila_txt(29, "Tomas USB", id(rele_tomas_usb).state);
+        fila_txt(41, "Tomas 12V", id(rele_tomas_12v).state);
+        fila_txt(53, "Inversor", id(rele_inversor).state);
+
+      } else if (pagina == "Agua") {
+        fila_num(20, "Limpias nivel", id(agua_limpias_nivel).state, 0, " %");
+        fila_num(40, "Grises nivel", id(agua_grises_nivel).state, 0, " %");
+
+      } else if (pagina == "Luces") {
+        fila_txt(17, "Salon", id(rele_luz_salon).state);
+        fila_txt(29, "Salon cama", id(rele_luz_cama).state);
+        fila_txt(41, "Ext. lateral", id(rele_luz_lateral).state);
+        fila_txt(53, "Ext. atras", id(rele_luz_atras).state);
+
+      } else if (pagina == "Calefaccion") {
+        it.print(0, 20, id(fuente_12), "Calefaccion");
+        it.print(0, 39, id(fuente_12), "Sin integrar");
+
+      } else if (pagina == "Trampillas") {
+        it.print(0, 20, id(fuente_18),
+                 id(trampilla_seleccionada).current_option().c_str());
+        it.print(0, 43, id(fuente_12), "Sin integrar");
+
+      } else if (pagina == "Seguridad") {
+        it.print(0, 20, id(fuente_12), "Sensores y avisos");
+        it.print(0, 39, id(fuente_12), "Sin integrar");
+
+      } else if (pagina == "Ampliaciones") {
+        it.print(0, 20, id(fuente_12), "Nuevos sensores");
+        it.print(0, 39, id(fuente_12), "Sin integrar");
+
+      } else if (pagina == "Sistema") {
+        if (WiFi.status() == WL_CONNECTED) {
+          it.print(0, 19, id(fuente_12), id(ip_panel).state.c_str());
+        } else {
+          it.print(0, 19, id(fuente_12), "WiFi desconectado");
+        }
+
+        if (!isnan(id(senal_wifi).state)) {
+          it.printf(0, 36, id(fuente_12), "WiFi: %.0f dBm",
+                    id(senal_wifi).state);
+        }
+
+        it.print(0, 51, id(fuente_12),
+                 id(conexion_mqtt).is_connected()
+                 ? "MQTT: conectado"
+                 : "MQTT: desconectado");
+
+      } else {
+        it.print(0, 20, id(fuente_12), "Nueva seccion");
+        it.print(0, 39, id(fuente_12), "Sin configurar");
+      }
